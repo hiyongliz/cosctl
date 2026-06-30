@@ -9,7 +9,13 @@ wheels/
 # Virtual environments
 .venv
 
-.env
+# Tool caches
+.pytest_cache/
+.ruff_cache/
 
-# macOS
+# Version control
+.jj/
+
+# Environment / OS
+.env
 .DS_Store

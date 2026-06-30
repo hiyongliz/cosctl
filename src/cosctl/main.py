@@ -4,6 +4,7 @@ import os
 from collections.abc import Callable
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 
 import typer
 from qcloud_cos import CosConfig, CosS3Client
@@ -140,18 +141,37 @@ def size_formater(size: str) -> str:
 
 def default_object_name(file_path: str) -> str:
     """Return the default object name for a local file."""
-    return os.path.basename(file_path)
+    return Path(file_path).name
 
 
 def default_file_path(obj_name: str) -> str:
     """Return the default local file path for an object key."""
-    return os.path.basename(obj_name.rstrip("/")) or obj_name
+    return Path(obj_name.rstrip("/")).name or obj_name
 
 
 def command_error(error: Exception) -> None:
     """Print a command error message and exit with a non-zero status."""
     typer.echo(f"Error: {error}", err=True)
     raise typer.Exit(code=1)
+
+
+def parse_tags(tags: list[str]) -> dict:
+    """Parse --tag key=value pairs into the COS Tagging dict.
+
+    Raises ValueError on malformed pairs or when more than 10 tags are given
+    (COS enforces a 10-tag-per-object limit).
+    """
+    tag_list: list[dict[str, str]] = []
+    for item in tags:
+        if "=" not in item:
+            raise ValueError(f"Invalid tag {item!r}, expected key=value")
+        key, _, value = item.partition("=")
+        if not key:
+            raise ValueError(f"Invalid tag {item!r}, key cannot be empty")
+        tag_list.append({"Key": key, "Value": value})
+    if len(tag_list) > 10:
+        raise ValueError("Too many tags, COS supports up to 10 tags per object")
+    return {"TagSet": {"Tag": tag_list}}
 
 
 def download_object(client: CosS3Client, bucket: str, obj_name: str, filepath: str) -> None:
@@ -180,7 +200,16 @@ def download_object(client: CosS3Client, bucket: str, obj_name: str, filepath: s
 
 
 @app.command()
-def upload(file: str, obj_name: str = "") -> None:
+def upload(
+    file: str,
+    obj_name: str = typer.Argument(""),
+    tag: list[str] = typer.Option(
+        None,
+        "--tag",
+        "-t",
+        help="Object tag as key=value; repeat to add multiple tags (max 10).",
+    ),
+) -> None:
     """Upload a file to the bucket."""
     if obj_name == "":
         obj_name = default_object_name(file)
@@ -206,6 +235,14 @@ def upload(file: str, obj_name: str = "") -> None:
 
     typer.echo(f"Upload completed in {datetime.now() - start_time}\n{response}")
 
+    if tag:
+        try:
+            tagging = parse_tags(tag)
+            client.put_object_tagging(Bucket=bucket, Key=obj_name, Tagging=tagging)
+        except (ValueError, CosClientError, CosServiceError) as error:
+            command_error(error)
+        typer.echo(f"Tagged {obj_name} with {len(tag)} tag(s)")
+
 
 @app.command()
 def get(obj_name: str, filepath: str = "") -> None:
@@ -225,8 +262,10 @@ def get(obj_name: str, filepath: str = "") -> None:
     typer.echo(f"Download completed in {datetime.now() - start_time}")
 
 
-@app.command()
-def list() -> None:
+@app.command(name="list")
+def list_objects(
+    prefix: str = typer.Argument("", help="Only list object keys starting with this prefix."),
+) -> None:
     """List all objects in the bucket."""
     try:
         client, bucket = create_client_and_bucket()
@@ -235,7 +274,7 @@ def list() -> None:
         while True:
             response = client.list_objects(
                 Bucket=bucket,
-                Prefix="",
+                Prefix=prefix,
                 Marker=marker,
                 MaxKeys=100,
             )

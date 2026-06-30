@@ -41,7 +41,9 @@ Optional:
 cosctl --help
 cosctl --version
 cosctl list
+cosctl list logs/
 cosctl upload ./local-file.txt remote-file.txt
+cosctl upload ./local-file.txt remote-file.txt --tag env=prod --tag owner=team
 cosctl get remote-file.txt ./downloaded.txt
 cosctl delete remote-file.txt
 ```

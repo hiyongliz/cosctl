@@ -10,6 +10,7 @@ from cosctl.main import (
     app,
     create_progress,
     get_version,
+    parse_tags,
     progress_callback,
     size_formater,
 )
@@ -59,6 +60,139 @@ class TestProgress:
 
             assert progress.tasks[task].total is None
             assert progress.tasks[task].completed == 100
+
+
+class TestParseTags:
+    def test_parse_single_tag(self):
+        result = parse_tags(["env=prod"])
+        assert result == {"TagSet": {"Tag": [{"Key": "env", "Value": "prod"}]}}
+
+    def test_parse_multiple_tags(self):
+        result = parse_tags(["env=prod", "owner=team"])
+        assert result == {
+            "TagSet": {
+                "Tag": [
+                    {"Key": "env", "Value": "prod"},
+                    {"Key": "owner", "Value": "team"},
+                ]
+            }
+        }
+
+    def test_parse_tag_without_equals_raises(self):
+        with pytest.raises(ValueError, match="expected key=value"):
+            parse_tags(["invalid"])
+
+    def test_parse_empty_key_raises(self):
+        with pytest.raises(ValueError, match="key cannot be empty"):
+            parse_tags(["=value"])
+
+    def test_parse_too_many_tags_raises(self):
+        tags = [f"k{i}=v{i}" for i in range(11)]
+        with pytest.raises(ValueError, match="up to 10 tags"):
+            parse_tags(tags)
+
+
+class TestUploadTags:
+    def test_upload_with_tags_calls_put_object_tagging(self, monkeypatch: pytest.MonkeyPatch, tmp_path):
+        import cosctl.main as main_module
+
+        local = tmp_path / "f.txt"
+        local.write_text("hello")
+
+        calls: dict[str, object] = {}
+
+        class FakeUploadClient:
+            def upload_file(self, **kwargs):
+                calls["upload"] = kwargs
+                return {"ETag": "abc"}
+
+            def put_object_tagging(self, **kwargs):
+                calls["tagging"] = kwargs
+
+        monkeypatch.setenv("SECRET_ID", "id")
+        monkeypatch.setenv("SECRET_KEY", "key")
+        monkeypatch.setenv("BUCKET", "bucket")
+        monkeypatch.setattr(
+            main_module,
+            "create_client_and_bucket",
+            lambda: (FakeUploadClient(), "bucket"),
+        )
+
+        result = runner.invoke(
+            app,
+            ["upload", str(local), "remote.txt", "--tag", "env=prod", "-t", "owner=team"],
+        )
+
+        assert result.exit_code == 0
+        assert calls["upload"]["Key"] == "remote.txt"
+        assert calls["tagging"]["Bucket"] == "bucket"
+        assert calls["tagging"]["Key"] == "remote.txt"
+        assert calls["tagging"]["Tagging"] == {
+            "TagSet": {"Tag": [{"Key": "env", "Value": "prod"}, {"Key": "owner", "Value": "team"}]}
+        }
+        assert "Tagged remote.txt with 2 tag(s)" in result.stdout
+
+    def test_upload_without_tags_skips_tagging(self, monkeypatch: pytest.MonkeyPatch, tmp_path):
+        import cosctl.main as main_module
+
+        local = tmp_path / "f.txt"
+        local.write_text("hello")
+
+        class FakeUploadClient:
+            def upload_file(self, **kwargs):
+                return {"ETag": "abc"}
+
+            def put_object_tagging(self, **kwargs):
+                raise AssertionError("put_object_tagging should not be called without --tag")
+
+        monkeypatch.setenv("SECRET_ID", "id")
+        monkeypatch.setenv("SECRET_KEY", "key")
+        monkeypatch.setenv("BUCKET", "bucket")
+        monkeypatch.setattr(
+            main_module,
+            "create_client_and_bucket",
+            lambda: (FakeUploadClient(), "bucket"),
+        )
+
+        result = runner.invoke(app, ["upload", str(local), "remote.txt"])
+
+        assert result.exit_code == 0
+        assert "Upload completed" in result.stdout
+        assert "Tagged" not in result.stdout
+
+    def test_upload_tagging_failure_reports_error_no_rollback(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ):
+        import cosctl.main as main_module
+
+        local = tmp_path / "f.txt"
+        local.write_text("hello")
+
+        class TaggingFailed(Exception):
+            pass
+
+        class FakeUploadClient:
+            def upload_file(self, **kwargs):
+                return {"ETag": "abc"}
+
+            def put_object_tagging(self, **kwargs):
+                raise TaggingFailed("tag service down")
+
+        monkeypatch.setattr(main_module, "CosClientError", TaggingFailed)
+        monkeypatch.setenv("SECRET_ID", "id")
+        monkeypatch.setenv("SECRET_KEY", "key")
+        monkeypatch.setenv("BUCKET", "bucket")
+        monkeypatch.setattr(
+            main_module,
+            "create_client_and_bucket",
+            lambda: (FakeUploadClient(), "bucket"),
+        )
+
+        result = runner.invoke(app, ["upload", str(local), "remote.txt", "--tag", "env=prod"])
+
+        assert result.exit_code == 1
+        assert "Upload completed" in result.stdout
+        assert "tag service down" in result.stderr
 
 
 class TestVersion:
@@ -194,8 +328,39 @@ class TestCli:
         assert "a.txt" in result.stdout
         assert "b.txt" in result.stdout
         assert client.calls[0]["Bucket"] == "bucket"
+        assert client.calls[0]["Prefix"] == ""
         assert client.calls[0]["Marker"] == ""
         assert client.calls[1]["Marker"] == "page-2"
+
+    def test_list_with_prefix_forwards_to_sdk(self, monkeypatch: pytest.MonkeyPatch):
+        import cosctl.main as main_module
+
+        class FakePrefixClient:
+            def __init__(self):
+                self.calls = []
+
+            def list_objects(self, **kwargs):
+                self.calls.append(kwargs)
+                return {
+                    "Contents": [
+                        {"LastModified": "2025-01-01T00:00:00Z", "Size": "12", "Key": "logs/a.txt"},
+                    ],
+                    "IsTruncated": "false",
+                }
+
+        client = FakePrefixClient()
+        monkeypatch.setattr(
+            main_module,
+            "create_client_and_bucket",
+            lambda: (client, "bucket"),
+        )
+
+        result = runner.invoke(app, ["list", "logs/"])
+
+        assert result.exit_code == 0
+        assert "total 1" in result.stdout
+        assert "logs/a.txt" in result.stdout
+        assert client.calls[0]["Prefix"] == "logs/"
 
     def test_delete_success(self, monkeypatch: pytest.MonkeyPatch):
         import cosctl.main as main_module
