@@ -1,11 +1,12 @@
 .PHONY: sync
 sync:
-	@ECHO "Syncing the package..."
-	uv sync
-	@ECHO "Sync completed."
+	@echo "Syncing the package with development dependencies..."
+	uv sync --extra dev
+	@echo "Sync completed."
 
 .PHONY: build
 build:
-	@ECHO "Building the package..."
+	@echo "Building the package..."
+	uv sync --extra dev
 	bash build.sh
-	@ECHO "Build completed."
+	@echo "Build completed."

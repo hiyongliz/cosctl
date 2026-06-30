@@ -1,13 +1,53 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "coscli"
-version = "0.1.1"
+name = "cosctl"
+version = "0.1.3"
 description = "A simple command line tool for managing Tencent Cloud COS (Cloud Object Storage)."
 readme = "README.md"
-requires-python = ">=3.6"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "lazy", email = "644220198@qq.com" },
+]
+keywords = ["tencent", "cos", "cli", "cloud-storage", "qcloud"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet",
+    "Topic :: Utilities",
+]
 dependencies = [
     "cos-python-sdk-v5>=1.9.37",
     "typer>=0.10.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "build>=1.2.2",
+    "pytest>=9.0.0",
+    "twine>=6.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/hiyongliz/cosctl"
+Source = "https://github.com/hiyongliz/cosctl"
+Issues = "https://github.com/hiyongliz/cosctl/issues"
+
 [project.scripts]
-coscli = "coscli.main:app"
+cosctl = "cosctl.main:app"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
